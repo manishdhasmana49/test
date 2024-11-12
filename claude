@@ -49,3 +49,114 @@ combined_df = combine_stations(directory)
 
 print(combined_df.head())
 """
+
+
+
+############################################
+#######################################
+
+import pandas as pd
+import numpy as np
+from scipy import stats
+import matplotlib.pyplot as plt
+from scipy.stats import norm, gumbel_r, genextreme, pearson3, lognorm
+import statsmodels.api as sm
+
+def analyze_extreme_values(df, station_col=None):
+    """
+    Analyze extreme values using different distributions
+    """
+    # If station_col is not specified, assume df is a series
+    data = df[station_col] if station_col else df
+    
+    # Get yearly maximum values
+    yearly_max = data.groupby(data.index.year).max()
+    
+    # Distributions to test
+    distributions = {
+        'Normal': norm,
+        'Gumbel': gumbel_r,
+        'GEV': genextreme,
+        'Pearson Type III': pearson3,
+        'Log-Normal': lognorm
+    }
+    
+    # Fit distributions and calculate goodness of fit
+    results = {}
+    for name, distribution in distributions.items():
+        # Fit distribution
+        params = distribution.fit(yearly_max)
+        
+        # Perform Kolmogorov-Smirnov test
+        ks_stat, p_value = stats.kstest(yearly_max, distribution.name, params)
+        
+        # Store results
+        results[name] = {
+            'params': params,
+            'ks_statistic': ks_stat,
+            'p_value': p_value
+        }
+    
+    # Plotting
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # Q-Q plot
+    for name, dist_results in results.items():
+        distribution = distributions[name]
+        params = dist_results['params']
+        
+        # Generate theoretical quantiles
+        theoretical_quantiles = distribution.ppf(np.linspace(0.01, 0.99, len(yearly_max)), *params)
+        
+        # Sort observed data
+        observed_quantiles = np.sort(yearly_max)
+        
+        # Plot
+        ax1.scatter(theoretical_quantiles, observed_quantiles, alpha=0.5, label=name)
+    
+    ax1.plot([yearly_max.min(), yearly_max.max()], [yearly_max.min(), yearly_max.max()], 
+             'k--', label='Perfect Fit')
+    ax1.set_xlabel('Theoretical Quantiles')
+    ax1.set_ylabel('Observed Quantiles')
+    ax1.set_title('Q-Q Plot')
+    ax1.legend()
+    
+    # PDF plot
+    x = np.linspace(yearly_max.min(), yearly_max.max(), 100)
+    for name, dist_results in results.items():
+        distribution = distributions[name]
+        params = dist_results['params']
+        
+        # Plot PDF
+        pdf = distribution.pdf(x, *params)
+        ax2.plot(x, pdf, label=f'{name}')
+    
+    # Add histogram of observed data
+    ax2.hist(yearly_max, density=True, alpha=0.3, bins='auto', label='Observed Data')
+    ax2.set_xlabel('Flow')
+    ax2.set_ylabel('Density')
+    ax2.set_title('Probability Density Function')
+    ax2.legend()
+    
+    plt.tight_layout()
+    
+    # Create summary table
+    summary = pd.DataFrame.from_dict(results, orient='index')
+    summary['p_value'] = summary['p_value'].round(4)
+    summary['ks_statistic'] = summary['ks_statistic'].round(4)
+    
+    return yearly_max, summary, fig
+
+# Example usage:
+"""
+# Assuming your data is already loaded into a DataFrame called 'df'
+# For a single station:
+yearly_max, summary, fig = analyze_extreme_values(df['station_name'])
+
+# Print results
+print("\nGoodness of Fit Tests:")
+print(summary[['ks_statistic', 'p_value']])
+
+# Show plot
+plt.show()
+"""
