@@ -1,0 +1,51 @@
+import pandas as pd
+import glob
+import os
+
+def process_streamflow_data(file_path):
+    # Read the data
+    df = pd.read_csv(file_path, delim_whitespace=True, header=None)
+    
+    # Create dates and values list
+    dates = []
+    values = []
+    
+    for _, row in df.iterrows():
+        year = int(row[0])
+        month = int(row[1])
+        daily_values = row[2:].dropna()  # Get daily values, dropping any NaN
+        
+        # Create dates for each day in the month
+        for day in range(len(daily_values)):
+            dates.append(pd.Timestamp(year=year, month=month, day=day+1))
+            values.append(daily_values.iloc[day])
+    
+    # Create dataframe
+    station_df = pd.DataFrame({'flow': values}, index=dates)
+    station_df.index.name = 'Date'
+    
+    return station_df
+
+# For multiple files:
+def combine_stations(directory_path, file_pattern="*.txt"):
+    files = glob.glob(os.path.join(directory_path, file_pattern))
+    all_stations = {}
+    
+    for file in files:
+        station_name = os.path.basename(file).split('.')[0]
+        all_stations[station_name] = process_streamflow_data(file)['flow']
+    
+    return pd.DataFrame(all_stations)
+
+# Example usage:
+"""
+# For single file
+file_path = "your_file_path.txt"
+df = process_streamflow_data(file_path)
+
+# For multiple files in a directory
+directory = "your_directory_path"
+combined_df = combine_stations(directory)
+
+print(combined_df.head())
+"""
