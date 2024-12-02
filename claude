@@ -1,46 +1,42 @@
 import pandas as pd
-import glob
-import os
+import numpy as np
 
-def combine_daily_streamflow(directory_path, file_pattern="*.txt"):
-    # Get list of files
-    files = glob.glob(os.path.join(directory_path, file_pattern))
+# Load the exposure data and GFK postcodes
+exposure_df = pd.read_csv('exposure_data.csv')  # Replace with your actual filename
+gfk_postcodes_df = pd.read_csv('gfk_postcodes.csv')  # Replace with your actual filename
+
+# Assuming the zipcode column is named 'zipcode' in both dataframes
+# First, check which zipcodes from exposure data are not in GFK postcodes
+missing_zipcodes = exposure_df[~exposure_df['zipcode'].isin(gfk_postcodes_df['zipcode'])]
+
+# Function to find the closest matching postcode
+def find_closest_postcode(zipcode, gfk_df, lat, lon):
+    # Filter GFK postcodes to those with similar first few digits
+    similar_postcodes = gfk_df[gfk_df['zipcode'].str.startswith(str(zipcode)[:2])]
     
-    # Dictionary to store station data
-    station_data = {}
-    
-    for file in files:
-        # Read file
-        df = pd.read_csv(file, delim_whitespace=True, header=None)
+    if len(similar_postcodes) > 0:
+        # Calculate distance using Haversine formula or simple Euclidean distance
+        similar_postcodes['distance'] = np.sqrt(
+            (similar_postcodes['lat'] - lat)**2 + 
+            (similar_postcodes['lon'] - lon)**2
+        )
         
-        # Generate dates for each row
-        dates = []
-        for _, row in df.iterrows():
-            year = int(row[0])
-            month = int(row[1])
-            # Get number of days in this month
-            month_days = pd.Period(year=year, month=month, freq='M').days_in_month
-            # Generate daily dates for this month
-            dates.extend([pd.Timestamp(year=year, month=month, day=d+1) for d in range(month_days)])
-            
-            # Get daily values and extend to station data
-            daily_values = row[2:2+month_days].values  # Only take the days that exist in that month
-            station_name = os.path.basename(file).split('.')[0]  # Use filename as station name
-            
-            if station_name not in station_data:
-                station_data[station_name] = []
-            station_data[station_name].extend(daily_values)
+        # Return the closest postcode
+        return similar_postcodes.loc[similar_postcodes['distance'].idxmin(), 'zipcode']
     
-    # Create dataframe with all stations
-    combined_df = pd.DataFrame(station_data, index=dates)
-    combined_df.index.name = 'Date'
-    
-    return combined_df
+    return np.nan
 
-# Example usage:
-"""
-directory = "your_directory_path"
-daily_flow_df = combine_daily_streamflow(directory)
+# Assign closest GFK postcodes to missing zipcodes
+exposure_df['gfk_postcode'] = exposure_df.apply(
+    lambda row: row['zipcode'] if row['zipcode'] in gfk_postcodes_df['zipcode'].values 
+    else find_closest_postcode(row['zipcode'], gfk_postcodes_df, row['lat'], row['lon']), 
+    axis=1
+)
 
-print(daily_flow_df.head())
-"""
+# Summarize the results
+print("Total zipcodes in exposure data:", len(exposure_df))
+print("Zipcodes not found in GFK:", len(missing_zipcodes))
+print("Zipcodes successfully matched:", len(exposure_df) - len(missing_zipcodes))
+
+# Optional: Save the updated dataframe
+exposure_df.to_csv('exposure_data_with_gfk_postcodes.csv', index=False)
