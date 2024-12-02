@@ -2,314 +2,45 @@ import pandas as pd
 import glob
 import os
 
-def process_streamflow_data(file_path):
-    # Read the data
-    df = pd.read_csv(file_path, delim_whitespace=True, header=None)
-    
-    # Create dates and values list
-    dates = []
-    values = []
-    
-    for _, row in df.iterrows():
-        year = int(row[0])
-        month = int(row[1])
-        daily_values = row[2:].dropna()  # Get daily values, dropping any NaN
-        
-        # Create dates for each day in the month
-        for day in range(len(daily_values)):
-            dates.append(pd.Timestamp(year=year, month=month, day=day+1))
-            values.append(daily_values.iloc[day])
-    
-    # Create dataframe
-    station_df = pd.DataFrame({'flow': values}, index=dates)
-    station_df.index.name = 'Date'
-    
-    return station_df
-
-# For multiple files:
-def combine_stations(directory_path, file_pattern="*.txt"):
+def combine_daily_streamflow(directory_path, file_pattern="*.txt"):
+    # Get list of files
     files = glob.glob(os.path.join(directory_path, file_pattern))
-    all_stations = {}
+    
+    # Dictionary to store station data
+    station_data = {}
     
     for file in files:
-        station_name = os.path.basename(file).split('.')[0]
-        all_stations[station_name] = process_streamflow_data(file)['flow']
+        # Read file
+        df = pd.read_csv(file, delim_whitespace=True, header=None)
+        
+        # Generate dates for each row
+        dates = []
+        for _, row in df.iterrows():
+            year = int(row[0])
+            month = int(row[1])
+            # Get number of days in this month
+            month_days = pd.Period(year=year, month=month, freq='M').days_in_month
+            # Generate daily dates for this month
+            dates.extend([pd.Timestamp(year=year, month=month, day=d+1) for d in range(month_days)])
+            
+            # Get daily values and extend to station data
+            daily_values = row[2:2+month_days].values  # Only take the days that exist in that month
+            station_name = os.path.basename(file).split('.')[0]  # Use filename as station name
+            
+            if station_name not in station_data:
+                station_data[station_name] = []
+            station_data[station_name].extend(daily_values)
     
-    return pd.DataFrame(all_stations)
+    # Create dataframe with all stations
+    combined_df = pd.DataFrame(station_data, index=dates)
+    combined_df.index.name = 'Date'
+    
+    return combined_df
 
 # Example usage:
 """
-# For single file
-file_path = "your_file_path.txt"
-df = process_streamflow_data(file_path)
-
-# For multiple files in a directory
 directory = "your_directory_path"
-combined_df = combine_stations(directory)
+daily_flow_df = combine_daily_streamflow(directory)
 
-print(combined_df.head())
-"""
-
-
-
-############################################
-#######################################
-
-import pandas as pd
-import numpy as np
-from scipy import stats
-import matplotlib.pyplot as plt
-from scipy.stats import norm, gumbel_r, genextreme, pearson3, lognorm
-import statsmodels.api as sm
-
-def analyze_extreme_values(df, station_col=None):
-    """
-    Analyze extreme values using different distributions
-    """
-    # If station_col is not specified, assume df is a series
-    data = df[station_col] if station_col else df
-    
-    # Get yearly maximum values
-    yearly_max = data.groupby(data.index.year).max()
-    
-    # Distributions to test
-    distributions = {
-        'Normal': norm,
-        'Gumbel': gumbel_r,
-        'GEV': genextreme,
-        'Pearson Type III': pearson3,
-        'Log-Normal': lognorm
-    }
-    
-    # Fit distributions and calculate goodness of fit
-    results = {}
-    for name, distribution in distributions.items():
-        # Fit distribution
-        params = distribution.fit(yearly_max)
-        
-        # Perform Kolmogorov-Smirnov test
-        ks_stat, p_value = stats.kstest(yearly_max, distribution.name, params)
-        
-        # Store results
-        results[name] = {
-            'params': params,
-            'ks_statistic': ks_stat,
-            'p_value': p_value
-        }
-    
-    # Plotting
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-    
-    # Q-Q plot
-    for name, dist_results in results.items():
-        distribution = distributions[name]
-        params = dist_results['params']
-        
-        # Generate theoretical quantiles
-        theoretical_quantiles = distribution.ppf(np.linspace(0.01, 0.99, len(yearly_max)), *params)
-        
-        # Sort observed data
-        observed_quantiles = np.sort(yearly_max)
-        
-        # Plot
-        ax1.scatter(theoretical_quantiles, observed_quantiles, alpha=0.5, label=name)
-    
-    ax1.plot([yearly_max.min(), yearly_max.max()], [yearly_max.min(), yearly_max.max()], 
-             'k--', label='Perfect Fit')
-    ax1.set_xlabel('Theoretical Quantiles')
-    ax1.set_ylabel('Observed Quantiles')
-    ax1.set_title('Q-Q Plot')
-    ax1.legend()
-    
-    # PDF plot
-    x = np.linspace(yearly_max.min(), yearly_max.max(), 100)
-    for name, dist_results in results.items():
-        distribution = distributions[name]
-        params = dist_results['params']
-        
-        # Plot PDF
-        pdf = distribution.pdf(x, *params)
-        ax2.plot(x, pdf, label=f'{name}')
-    
-    # Add histogram of observed data
-    ax2.hist(yearly_max, density=True, alpha=0.3, bins='auto', label='Observed Data')
-    ax2.set_xlabel('Flow')
-    ax2.set_ylabel('Density')
-    ax2.set_title('Probability Density Function')
-    ax2.legend()
-    
-    plt.tight_layout()
-    
-    # Create summary table
-    summary = pd.DataFrame.from_dict(results, orient='index')
-    summary['p_value'] = summary['p_value'].round(4)
-    summary['ks_statistic'] = summary['ks_statistic'].round(4)
-    
-    return yearly_max, summary, fig
-
-# Example usage:
-"""
-# Assuming your data is already loaded into a DataFrame called 'df'
-# For a single station:
-yearly_max, summary, fig = analyze_extreme_values(df['station_name'])
-
-# Print results
-print("\nGoodness of Fit Tests:")
-print(summary[['ks_statistic', 'p_value']])
-
-# Show plot
-plt.show()
-"""
-
-
-
-#######################
-#####################################
-import pandas as pd
-import numpy as np
-from scipy import stats
-from scipy.stats import norm, gumbel_r, genextreme, pearson3, lognorm
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-def analyze_extreme_values(df, station_col=None, return_periods=[2, 5, 10, 25, 50, 100]):
-    """
-    Analyze extreme values with return periods and enhanced visualizations
-    """
-    # Set style
-    plt.style.use('seaborn')
-    sns.set_palette("husl")
-    
-    # If station_col is not specified, assume df is a series
-    data = df[station_col] if station_col else df
-    
-    # Get yearly maximum values
-    yearly_max = data.groupby(data.index.year).max()
-    n = len(yearly_max)
-    
-    # Calculate empirical return periods
-    sorted_data = np.sort(yearly_max)[::-1]  # Sort in descending order
-    empirical_T = (n + 1) / np.arange(1, n + 1)
-    
-    # Distributions to test
-    distributions = {
-        'Normal': norm,
-        'Gumbel': gumbel_r,
-        'GEV': genextreme,
-        'Pearson Type III': pearson3,
-        'Log-Normal': lognorm
-    }
-    
-    # Fit distributions and calculate return periods
-    results = {}
-    for name, distribution in distributions.items():
-        # Fit distribution
-        params = distribution.fit(yearly_max)
-        
-        # Perform Kolmogorov-Smirnov test
-        ks_stat, p_value = stats.kstest(yearly_max, distribution.name, params)
-        
-        # Calculate return period flows
-        return_period_flows = {}
-        for T in return_periods:
-            p = 1 - 1/T
-            return_period_flows[f'{T}-year'] = distribution.ppf(p, *params)
-        
-        # Store results
-        results[name] = {
-            'params': params,
-            'ks_statistic': ks_stat,
-            'p_value': p_value,
-            'return_periods': return_period_flows
-        }
-    
-    # Create figure with subplots
-    fig = plt.figure(figsize=(20, 12))
-    gs = fig.add_gridspec(2, 2)
-    
-    # 1. Q-Q Plot
-    ax1 = fig.add_subplot(gs[0, 0])
-    for name, dist_results in results.items():
-        distribution = distributions[name]
-        params = dist_results['params']
-        theoretical_quantiles = distribution.ppf(np.linspace(0.01, 0.99, len(yearly_max)), *params)
-        observed_quantiles = np.sort(yearly_max)
-        ax1.scatter(theoretical_quantiles, observed_quantiles, alpha=0.6, label=name)
-    
-    ax1.plot([yearly_max.min(), yearly_max.max()], [yearly_max.min(), yearly_max.max()], 
-             'k--', label='Perfect Fit')
-    ax1.set_xlabel('Theoretical Quantiles', fontsize=12)
-    ax1.set_ylabel('Observed Quantiles', fontsize=12)
-    ax1.set_title('Q-Q Plot', fontsize=14, pad=20)
-    ax1.legend(fontsize=10)
-    ax1.grid(True, alpha=0.3)
-    
-    # 2. PDF Plot
-    ax2 = fig.add_subplot(gs[0, 1])
-    x = np.linspace(yearly_max.min(), yearly_max.max(), 100)
-    for name, dist_results in results.items():
-        distribution = distributions[name]
-        params = dist_results['params']
-        pdf = distribution.pdf(x, *params)
-        ax2.plot(x, pdf, label=f'{name}', linewidth=2)
-    
-    ax2.hist(yearly_max, density=True, alpha=0.3, bins='auto', label='Observed Data')
-    ax2.set_xlabel('Flow', fontsize=12)
-    ax2.set_ylabel('Density', fontsize=12)
-    ax2.set_title('Probability Density Function', fontsize=14, pad=20)
-    ax2.legend(fontsize=10)
-    ax2.grid(True, alpha=0.3)
-    
-    # 3. Return Period Plot
-    ax3 = fig.add_subplot(gs[1, :])
-    
-    # Plot empirical return periods
-    ax3.scatter(empirical_T, sorted_data, c='black', label='Observed Data', 
-                alpha=0.6, zorder=5)
-    
-    # Plot fitted distributions
-    T_vals = np.logspace(np.log10(1), np.log10(max(return_periods)), 100)
-    for name, dist_results in results.items():
-        distribution = distributions[name]
-        params = dist_results['params']
-        p = 1 - 1/T_vals
-        flow_vals = distribution.ppf(p, *params)
-        ax3.plot(T_vals, flow_vals, label=name, linewidth=2)
-    
-    ax3.set_xscale('log')
-    ax3.set_xlabel('Return Period (years)', fontsize=12)
-    ax3.set_ylabel('Flow', fontsize=12)
-    ax3.set_title('Return Period Plot', fontsize=14, pad=20)
-    ax3.grid(True, alpha=0.3)
-    ax3.legend(fontsize=10)
-    
-    plt.tight_layout()
-    
-    # Create summary tables
-    summary_stats = pd.DataFrame.from_dict(results, orient='index')
-    summary_stats['p_value'] = summary_stats['p_value'].round(4)
-    summary_stats['ks_statistic'] = summary_stats['ks_statistic'].round(4)
-    
-    # Create return period summary
-    return_period_summary = pd.DataFrame({
-        name: results[name]['return_periods'] 
-        for name in distributions.keys()
-    }).round(2)
-    
-    return yearly_max, summary_stats, return_period_summary, fig
-
-# Example usage:
-"""
-# For a single station:
-yearly_max, summary_stats, return_period_summary, fig = analyze_extreme_values(df['station_name'])
-
-# Print results
-print("\nGoodness of Fit Tests:")
-print(summary_stats[['ks_statistic', 'p_value']])
-
-print("\nReturn Period Estimates:")
-print(return_period_summary)
-
-# Show plot
-plt.show()
+print(daily_flow_df.head())
 """
