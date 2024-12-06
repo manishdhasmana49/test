@@ -1,42 +1,69 @@
+import geopandas as gpd
 import pandas as pd
-import numpy as np
+from shapely.geometry import Point
+import os
 
-# Load the exposure data and GFK postcodes
-exposure_df = pd.read_csv('exposure_data.csv')  # Replace with your actual filename
-gfk_postcodes_df = pd.read_csv('gfk_postcodes.csv')  # Replace with your actual filename
-
-# Assuming the zipcode column is named 'zipcode' in both dataframes
-# First, check which zipcodes from exposure data are not in GFK postcodes
-missing_zipcodes = exposure_df[~exposure_df['zipcode'].isin(gfk_postcodes_df['zipcode'])]
-
-# Function to find the closest matching postcode
-def find_closest_postcode(zipcode, gfk_df, lat, lon):
-    # Filter GFK postcodes to those with similar first few digits
-    similar_postcodes = gfk_df[gfk_df['zipcode'].str.startswith(str(zipcode)[:2])]
+def process_zipcodes(exposure_data_path, gfk_zipcodes_path, output_folder):
+    """
+    Process zipcodes by identifying missing zipcodes and assigning nearest zipcodes.
     
-    if len(similar_postcodes) > 0:
-        # Calculate distance using Haversine formula or simple Euclidean distance
-        similar_postcodes['distance'] = np.sqrt(
-            (similar_postcodes['lat'] - lat)**2 + 
-            (similar_postcodes['lon'] - lon)**2
-        )
-        
-        # Return the closest postcode
-        return similar_postcodes.loc[similar_postcodes['distance'].idxmin(), 'zipcode']
+    Parameters:
+    - exposure_data_path: Path to the exposure data CSV/Excel file
+    - gfk_zipcodes_path: Path to the GFK zipcodes shapefile
+    - output_folder: Folder to save output files
+    """
+    # Create output folder if it doesn't exist
+    os.makedirs(output_folder, exist_ok=True)
     
-    return np.nan
+    # Read exposure data
+    exposure_df = pd.read_csv(exposure_data_path)
+    
+    # Read GFK zipcodes
+    gfk_gdf = gpd.read_file(gfk_zipcodes_path)
+    
+    # Create a GeoDataFrame from exposure data
+    exposure_gdf = gpd.GeoDataFrame(
+        exposure_df, 
+        geometry=gpd.points_from_xy(exposure_df.lon, exposure_df.lat),
+        crs=gfk_gdf.crs
+    )
+    
+    # Find unique zipcodes in exposure data
+    exposure_zipcodes = set(exposure_df['zipcode'])
+    gfk_zipcodes = set(gfk_gdf['zipcode'])  # Assuming 'zipcode' column exists in GFK data
+    
+    # Zipcodes in exposure data but not in GFK zipcodes
+    missing_zipcodes = exposure_zipcodes - gfk_zipcodes
+    
+    # Filter exposure data for missing zipcodes
+    missing_zipcodes_df = exposure_gdf[exposure_gdf['zipcode'].isin(missing_zipcodes)]
+    
+    # Export missing zipcodes data
+    missing_zipcodes_path = os.path.join(output_folder, 'missing_zipcodes.csv')
+    missing_zipcodes_df.drop('geometry', axis=1).to_csv(missing_zipcodes_path, index=False)
+    
+    # Find nearest zipcode for missing zipcodes
+    def find_nearest_zipcode(point):
+        # Calculate distances to all GFK zipcode polygons
+        distances = gfk_gdf.geometry.distance(point)
+        # Return the zipcode of the nearest polygon
+        return gfk_gdf.iloc[distances.argmin()]['zipcode']
+    
+    # Assign nearest zipcodes
+    missing_zipcodes_df['nearest_zipcode'] = missing_zipcodes_df['geometry'].apply(find_nearest_zipcode)
+    
+    # Export nearest zipcode assignments
+    nearest_zipcodes_path = os.path.join(output_folder, 'nearest_zipcodes.csv')
+    missing_zipcodes_df.drop('geometry', axis=1).to_csv(nearest_zipcodes_path, index=False)
+    
+    # Print summary
+    print(f"Total missing zipcodes: {len(missing_zipcodes)}")
+    print(f"Missing zipcodes exported to: {missing_zipcodes_path}")
+    print(f"Nearest zipcodes exported to: {nearest_zipcodes_path}")
 
-# Assign closest GFK postcodes to missing zipcodes
-exposure_df['gfk_postcode'] = exposure_df.apply(
-    lambda row: row['zipcode'] if row['zipcode'] in gfk_postcodes_df['zipcode'].values 
-    else find_closest_postcode(row['zipcode'], gfk_postcodes_df, row['lat'], row['lon']), 
-    axis=1
-)
-
-# Summarize the results
-print("Total zipcodes in exposure data:", len(exposure_df))
-print("Zipcodes not found in GFK:", len(missing_zipcodes))
-print("Zipcodes successfully matched:", len(exposure_df) - len(missing_zipcodes))
-
-# Optional: Save the updated dataframe
-exposure_df.to_csv('exposure_data_with_gfk_postcodes.csv', index=False)
+# Example usage
+# process_zipcodes(
+#     exposure_data_path='path/to/exposure_data.csv', 
+#     gfk_zipcodes_path='path/to/gfk_zipcodes.shp', 
+#     output_folder='path/to/output_folder'
+# )
